@@ -1,0 +1,327 @@
+# AURALIS VISION — full-stack Docker Compose orchestration.
+#
+# Implements the deployment architecture from the design document:
+#   nginx -> web (Flask/Gunicorn) -> {redis, postgres, minio, opensearch, clamav}
+#   redis -> {celery-cpu, celery-gpu (NVIDIA runtime)}
+#
+# Requirements: 21.2 (async workers keep HTTP fast), 24.1 (ClamAV scan),
+# 24.4 (isolated object storage), 25.1 (CSP at edge), 25.3 (edge rate limit),
+# 25.5 (secrets sourced from a secret store, never from source).
+#
+# Secrets are injected via Docker secrets (files under ./secrets/, git-ignored)
+# rather than being hard-coded here. Create them before `docker compose up`:
+#   mkdir -p secrets
+#   openssl rand -hex 32            > secrets/jwt_secret.txt
+#   openssl rand -hex 16            > secrets/postgres_password.txt
+#   openssl rand -hex 16            > secrets/minio_root_user.txt
+#   openssl rand -hex 32            > secrets/minio_root_password.txt
+#   openssl rand -hex 16            > secrets/opensearch_admin_password.txt
+
+name: auralis-vision
+
+# ---------------------------------------------------------------------------
+# Reusable anchors
+# ---------------------------------------------------------------------------
+x-app-env: &app-env
+  # Non-secret runtime configuration consumed by app/config.py (Task 1.1).
+  FLASK_ENV: production
+  DATABASE_URL: postgresql+psycopg://auralis@postgres:5432/auralis
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  REDIS_URL: redis://redis:6379/2
+  RATELIMIT_STORAGE_URI: redis://redis:6379/3
+  MINIO_ENDPOINT: minio:9000
+  MINIO_SECURE: "false"
+  MINIO_BUCKET_ORIGINALS: auralis-originals
+  MINIO_BUCKET_ARTIFACTS: auralis-artifacts
+  OPENSEARCH_URL: https://opensearch:9200
+  OPENSEARCH_VERIFY_CERTS: "false"
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: "3310"
+  MAX_FILE_SIZE_BYTES: "52428800"
+  RESULT_CAP: "20"
+  # File paths for secrets mounted by Docker secrets (read by config.py).
+  JWT_SECRET_FILE: /run/secrets/jwt_secret
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+  MINIO_ACCESS_KEY_FILE: /run/secrets/minio_root_user
+  MINIO_SECRET_KEY_FILE: /run/secrets/minio_root_password
+
+x-app-secrets: &app-secrets
+  - jwt_secret
+  - postgres_password
+  - minio_root_user
+  - minio_root_password
+
+services:
+  # -------------------------------------------------------------------------
+  # Edge: TLS termination, reverse proxy, CSP, edge rate limit (25.1, 25.3)
+  # -------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # -------------------------------------------------------------------------
+  # Web tier: stateless Flask app served by Gunicorn (21.2)
+  # -------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      gunicorn --bind 0.0.0.0:8000 --workers 4 --timeout 120
+      "app:create_app()"
+    environment:
+      <<: *app-env
+    secrets: *app-secrets
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    networks:
+      - edge
+      - backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # -------------------------------------------------------------------------
+  # CPU workers: metadata, OCR, stego, CTF, threat, reverse search
+  # -------------------------------------------------------------------------
+  celery-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      celery -A app.worker.celery_app worker
+      --loglevel=info --queues=cpu --concurrency=4 --hostname=cpu@%h
+    environment:
+      <<: *app-env
+      CELERY_TASK_DEFAULT_QUEUE: cpu
+    secrets: *app-secrets
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.worker.celery_app", "inspect", "ping", "-d", "cpu@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # -------------------------------------------------------------------------
+  # GPU worker: GEOINT, landmark, object, face, tampering, AI-image, deepfake
+  # Uses the NVIDIA container runtime.
+  # -------------------------------------------------------------------------
+  celery-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    restart: unless-stopped
+    runtime: nvidia
+    command: >
+      celery -A app.worker.celery_app worker
+      --loglevel=info --queues=gpu --concurrency=1 --hostname=gpu@%h
+    environment:
+      <<: *app-env
+      CELERY_TASK_DEFAULT_QUEUE: gpu
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    secrets: *app-secrets
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - backend
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+
+  # -------------------------------------------------------------------------
+  # Redis: Celery broker/result backend + rate-limit store
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL: system of record
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: auralis
+      POSTGRES_DB: auralis
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auralis -d auralis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # MinIO: isolated S3-compatible object storage (24.4)
+  # -------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_root_password
+    secrets:
+      - minio_root_user
+      - minio_root_password
+    volumes:
+      - minio_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  # -------------------------------------------------------------------------
+  # OpenSearch: findings search index
+  # -------------------------------------------------------------------------
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD_FILE: /run/secrets/opensearch_admin_password
+    secrets:
+      - opensearch_admin_password
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk https://localhost:9200/_cluster/health | grep -q '\"status\"'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # -------------------------------------------------------------------------
+  # ClamAV: malware scanning sidecar (24.1)
+  # -------------------------------------------------------------------------
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    volumes:
+      - clamav_data:/var/lib/clamav
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "clamdcheck.sh || exit 1"]
+      interval: 60s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+
+# ---------------------------------------------------------------------------
+# Networks: only nginx is reachable from the host; the backend is internal.
+# ---------------------------------------------------------------------------
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+# ---------------------------------------------------------------------------
+# Persistent volumes
+# ---------------------------------------------------------------------------
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  opensearch_data:
+  clamav_data:
+
+# ---------------------------------------------------------------------------
+# Secrets sourced from files outside source control (25.5)
+# ---------------------------------------------------------------------------
+secrets:
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  minio_root_user:
+    file: ./secrets/minio_root_user.txt
+  minio_root_password:
+    file: ./secrets/minio_root_password.txt
+  opensearch_admin_password:
+    file: ./secrets/opensearch_admin_password.txt

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}AURALIS VISION{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('ui.static', filename='style.css') }}" />
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+
+    <aside class="sidebar">
+      <div class="sidebar-brand">Auralis Vision</div>
+
+      <div class="sidebar-section">Main</div>
+      <a href="/ui/" class="sidebar-link{% if request.path == '/ui/' %} active{% endif %}">
+        <span class="sidebar-link-dot" style="background:#529cca;"></span> Dashboard
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#9a9a9a;"></span> Investigations
+      </a>
+
+      <div class="sidebar-section">Analysis</div>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#4caf50;"></span> Geo Analysis
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#ab47bc;"></span> Image Search
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#ffa726;"></span> OCR
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#78909c;"></span> Metadata
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#ef5350;"></span> Steganography
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#ec407a;"></span> Deepfake
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#7e57c2;"></span> AI Detection
+      </a>
+
+      <div class="sidebar-section">Intel</div>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#ffa726;"></span> Threat Intel
+      </a>
+      <a href="/ui/cases" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#78909c;"></span> Reports
+      </a>
+
+      <div class="sidebar-section">System</div>
+      <a href="/ui/settings" class="sidebar-link">
+        <span class="sidebar-link-dot" style="background:#6b6b6b;"></span> Settings
+      </a>
+
+      <div class="sidebar-footer">
+        <div>Auralis Vision v1.0</div>
+        <div class="sidebar-status">Online</div>
+      </div>
+    </aside>
+
+    <div class="main-content">
+      {% block header %}{% endblock %}
+      {% block content %}{% endblock %}
+    </div>
+
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

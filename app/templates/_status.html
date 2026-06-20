@@ -1,0 +1,13 @@
+<div class="text-sm font-semibold mb-2">Stage status</div>
+<ul class="space-y-1 text-xs">
+  {% for stage, status in stages.items() %}
+  <li class="flex items-center justify-between">
+    <span class="capitalize text-slate-400">{{ stage.replace('_', ' ') }}</span>
+    <span class="px-2 py-0.5 rounded
+      {% if status == 'completed' %}bg-emerald-700{% elif status == 'failed' %}bg-rose-700
+      {% elif status == 'running' %}bg-amber-600{% else %}bg-slate-700{% endif %}">{{ status }}</span>
+  </li>
+  {% else %}
+  <li class="text-slate-500">No stages yet.</li>
+  {% endfor %}
+</ul>

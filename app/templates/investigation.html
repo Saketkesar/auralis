@@ -1,0 +1,743 @@
+{% extends "base.html" %}
+{% block title %}Investigation {{ case_id[:8] }} — Auralis Vision{% endblock %}
+
+{% block header %}
+<div class="page-header" style="display:flex; justify-content:space-between; align-items:flex-start;">
+  <div>
+    <h1>Investigation</h1>
+    <p style="font-family:monospace; font-size:12px;">{{ case_id }}</p>
+  </div>
+  <div x-data="{}" style="display:flex; align-items:center; gap:8px; padding-top:44px;">
+    <span id="case-badge" class="badge badge-neutral"
+          x-data="{ s: 'queued' }"
+          x-text="s"></span>
+    <button class="btn btn-accent btn-sm" onclick="if(typeof investigation_data !== 'undefined') investigation_data.runCtf()">CTF Mode</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="page-body" x-data="investigation('{{ case_id }}')" x-init="init()">
+
+  <div class="investigation-grid">
+
+    <!-- Left column -->
+    <div>
+      <div class="panel mb-sm">
+        <div class="panel-body" style="padding:12px;">
+          <img :src="'/api/v1/cases/' + caseId + '/image'" alt="evidence"
+               class="evidence-img"
+               onerror="this.style.display='none'" />
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">Pipeline Stages</div>
+        <div class="panel-body" style="padding:8px 12px;">
+          <ul class="pipeline-list">
+            <template x-for="(st, name) in stages" :key="name">
+              <li class="pipeline-item">
+                <span class="pipeline-item-name" x-text="name.replace(/_/g,' ')"></span>
+                <span class="badge"
+                      :class="st==='completed'?'badge-success':st==='failed'?'badge-danger':st==='running'?'badge-warning':'badge-neutral'"
+                      x-text="st"></span>
+              </li>
+            </template>
+            <li x-show="Object.keys(stages).length===0" style="padding:8px 10px; color:#6b6b6b; font-size:13px;">
+              Waiting for stages...
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right column -->
+    <div>
+      <div class="tabs-bar">
+        <template x-for="t in tabs" :key="t.id">
+          <button @click="tab=t.id"
+                  :class="tab===t.id ? 'tab-btn active' : 'tab-btn'"
+                  x-text="t.label"></button>
+        </template>
+      </div>
+
+      <!-- Knowledge graph -->
+      <div x-show="tab==='graph'">
+        <div id="kg" class="kg-container"></div>
+        <p id="kg-error" class="hidden" style="color:#ffa726; font-size:13px; margin-top:8px;">Knowledge graph unavailable.</p>
+      </div>
+
+      <!-- Reports -->
+      <div x-show="tab==='reports'" class="finding-panel">
+        <div class="finding-body">
+          <p class="mb-sm">Export the full investigation report.</p>
+          <div class="report-actions">
+            <template x-for="fmt in ['pdf','docx','json']" :key="fmt">
+              <a :href="'#'" @click.prevent="downloadReport(fmt)"
+                 class="btn btn-primary btn-sm" x-text="fmt" style="text-transform:uppercase;"></a>
+            </template>
+          </div>
+          <div class="mt-sm text-muted" style="font-size:13px;" x-show="reportMsg" x-text="reportMsg"></div>
+        </div>
+      </div>
+
+      <!-- Hex viewer -->
+      <div x-show="tab==='hex'" class="finding-panel">
+        <div class="finding-body">
+          <button @click="loadHex()" class="btn btn-secondary btn-sm mb-sm">Load hex view</button>
+          <pre class="hex-viewer" x-text="hex"></pre>
+        </div>
+      </div>
+
+      <!-- Overview Dashboard Tab -->
+      <div x-show="tab==='overview'" class="finding-panel">
+        <div class="finding-header">
+          <span class="badge" :class="caseStatus==='complete'?'badge-success':caseStatus==='running'?'badge-warning':'badge-neutral'" x-text="caseStatus"></span>
+          <span class="text-muted" style="font-size:13px;" x-text="'Case ID: ' + caseId"></span>
+        </div>
+        <div class="finding-body">
+          <p style="margin-bottom: 12px; font-weight: 500; font-size:14px; color:#e0e0e0;">Investigation Executive Highlights</p>
+          <div class="overview-grid">
+            
+            <!-- AI Detection Card -->
+            <div class="overview-card">
+              <div class="overview-card-header">AI Detection</div>
+              <div class="overview-card-value">
+                <span x-show="findingFor('ai_image')" x-text="findingFor('ai_image')?.findings?.is_ai_generated ? 'AI Generated' : 'Camera Capture'"></span>
+                <span x-show="!findingFor('ai_image')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('ai_image')">
+                <span x-text="'Probability: ' + Math.round(findingFor('ai_image')?.findings?.ai_probability || 0) + '%'"></span>
+              </div>
+            </div>
+
+            <!-- Deepfake Card -->
+            <div class="overview-card">
+              <div class="overview-card-header">Deepfake</div>
+              <div class="overview-card-value">
+                <span x-show="findingFor('deepfake')" x-text="findingFor('deepfake')?.findings?.applicable ? (findingFor('deepfake')?.findings?.is_deepfake ? 'Deepfake' : 'Authentic Face') : 'No Face Present'"></span>
+                <span x-show="!findingFor('deepfake')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('deepfake')">
+                <span x-text="findingFor('deepfake')?.findings?.reason || 'Face check completed'"></span>
+              </div>
+            </div>
+
+            <!-- Stego Risk -->
+            <div class="overview-card">
+              <div class="overview-card-header">Steganography</div>
+              <div class="overview-card-value">
+                <span x-show="findingFor('stego')" x-text="'Risk: ' + (findingFor('stego')?.findings?.risk_score || 0) + '/100'"></span>
+                <span x-show="!findingFor('stego')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('stego')">
+                <span x-text="'Entropy: ' + (findingFor('stego')?.findings?.entropy || 0).toFixed(3)"></span>
+              </div>
+            </div>
+
+            <!-- Threat Intel -->
+            <div class="overview-card">
+              <div class="overview-card-header">Threat Intel</div>
+              <div class="overview-card-value">
+                <span x-show="findingFor('threat')" x-text="findingFor('threat')?.findings?.is_threat ? 'Threat Flagged' : 'Clean'"></span>
+                <span x-show="!findingFor('threat')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('threat')">
+                <span x-text="'Risk: ' + (findingFor('threat')?.findings?.risk_score || 0)"></span>
+              </div>
+            </div>
+
+            <!-- Metadata Origin -->
+            <div class="overview-card">
+              <div class="overview-card-header">Device & GPS</div>
+              <div class="overview-card-value" style="font-size:13px; line-height:1.3;">
+                <span x-show="findingFor('metadata') && findingFor('metadata')?.findings?.metadata?.Model" x-text="(findingFor('metadata')?.findings?.metadata?.Make || '') + ' ' + (findingFor('metadata')?.findings?.metadata?.Model || '')"></span>
+                <span x-show="findingFor('metadata') && !findingFor('metadata')?.findings?.metadata?.Model">No Camera EXIF</span>
+                <span x-show="!findingFor('metadata')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('metadata')">
+                <span x-show="findingFor('metadata')?.findings?.gps" x-text="'GPS: ' + (findingFor('metadata')?.findings?.gps?.lat || 0).toFixed(4) + ', ' + (findingFor('metadata')?.findings?.gps?.lon || 0).toFixed(4)"></span>
+                <span x-show="!findingFor('metadata')?.findings?.gps">No location tags</span>
+              </div>
+            </div>
+
+            <!-- Scene & Location -->
+            <div class="overview-card">
+              <div class="overview-card-header">Geo & Scene</div>
+              <div class="overview-card-value">
+                <span x-show="findingFor('geoint') && findingFor('geoint')?.findings?.candidates && findingFor('geoint')?.findings?.candidates[0]" x-text="findingFor('geoint')?.findings?.candidates[0]?.city + ', ' + findingFor('geoint')?.findings?.candidates[0]?.country"></span>
+                <span x-show="findingFor('geoint') && (!findingFor('geoint')?.findings?.candidates || !findingFor('geoint')?.findings?.candidates[0])" x-text="findingFor('geoint')?.findings?.scene?.terrain || 'Unknown'"></span>
+                <span x-show="!findingFor('geoint')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('geoint')">
+                <span x-text="'Terrain: ' + (findingFor('geoint')?.findings?.scene?.terrain || 'Unknown')"></span>
+              </div>
+            </div>
+
+            <!-- Tampering -->
+            <div class="overview-card">
+              <div class="overview-card-header">Tampering Confidence</div>
+              <div class="overview-card-value">
+                <span x-show="findingFor('tampering')" x-text="Math.round(findingFor('tampering')?.findings?.tampering_confidence || 0) + '%'"></span>
+                <span x-show="!findingFor('tampering')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('tampering')">
+                <span x-text="findingFor('tampering')?.findings?.analyses?.ela?.suspicious ? 'ELA Alert' : 'Normal'"></span>
+              </div>
+            </div>
+
+            <!-- OCR Clues -->
+            <div class="overview-card">
+              <div class="overview-card-header">OCR text</div>
+              <div class="overview-card-value" style="font-size:13px; max-height:40px; overflow:hidden; text-overflow:ellipsis;">
+                <span x-show="findingFor('ocr') && findingFor('ocr')?.findings?.location_clues?.length" x-text="findingFor('ocr')?.findings?.location_clues?.join(', ')"></span>
+                <span x-show="findingFor('ocr') && (!findingFor('ocr')?.findings?.location_clues || !findingFor('ocr')?.findings?.location_clues?.length)">No text clues</span>
+                <span x-show="!findingFor('ocr')">-</span>
+              </div>
+              <div class="overview-card-sub" x-show="findingFor('ocr')">
+                <span x-text="(findingFor('ocr')?.findings?.text_regions?.length || 0) + ' text blocks'"></span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- Generic finding tabs -->
+      <template x-for="t in tabs" :key="'panel-'+t.id">
+        <div x-show="tab===t.id && !['overview','graph','reports','hex'].includes(t.id)" class="finding-panel">
+          <template x-if="findingFor(t.id)">
+            <div>
+              <div class="finding-header">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span class="badge"
+                        :class="findingFor(t.id).status==='completed'?'badge-success':findingFor(t.id).status==='failed'?'badge-danger':'badge-neutral'"
+                        x-text="findingFor(t.id).status"></span>
+                  <span class="text-muted" style="font-size:13px;" x-show="findingFor(t.id).score!==null"
+                        x-text="'Score: ' + findingFor(t.id).score"></span>
+                </div>
+                
+                <!-- View Mode Toggle -->
+                <div class="toggle-group">
+                  <button @click="toggleRaw(t.id)" class="toggle-btn" :class="!isRaw(t.id) ? 'active' : ''">Beautified</button>
+                  <button @click="toggleRaw(t.id)" class="toggle-btn" :class="isRaw(t.id) ? 'active' : ''">Raw JSON</button>
+                </div>
+              </div>
+              
+              <div class="finding-body">
+                <!-- Raw JSON View -->
+                <div x-show="isRaw(t.id)">
+                  <pre class="finding-pre" x-text="pretty(findingFor(t.id).findings)"></pre>
+                </div>
+                
+                <!-- Beautified View -->
+                <div x-show="!isRaw(t.id)">
+                  
+                  <!-- Metadata Stage -->
+                  <template x-if="t.id === 'metadata'">
+                    <div>
+                      <div class="findings-section-title">Analysis Metrics</div>
+                      <table class="kv-table">
+                        <tr><td class="key">Risk Score</td><td class="val"><span class="badge" :class="findingFor('metadata').findings.risk_score > 50 ? 'badge-danger' : 'badge-success'" x-text="findingFor('metadata').findings.risk_score"></span></td></tr>
+                        <tr><td class="key">GPS Location</td><td class="val" x-text="findingFor('metadata').findings.gps ? (findingFor('metadata').findings.gps.lat.toFixed(6) + ', ' + findingFor('metadata').findings.gps.lon.toFixed(6)) : 'None'"></td></tr>
+                      </table>
+                      
+                      <div class="findings-section-title">Anomalies / Risk Flags</div>
+                      <div class="pill-list" x-show="Object.keys(findingFor('metadata').findings.flags || {}).length">
+                        <template x-for="(v, k) in findingFor('metadata').findings.flags" :key="k">
+                          <span class="pill-item" style="background:rgba(239,83,80,0.1); border-color:rgba(239,83,80,0.2); color:#ef5350;" x-text="k.replace(/_/g,' ')"></span>
+                        </template>
+                      </div>
+                      <div class="text-muted" x-show="!Object.keys(findingFor('metadata').findings.flags || {}).length" style="font-size:13px; padding:6px 0;">No risk flags detected.</div>
+
+                      <div class="findings-section-title">Camera EXIF Tags</div>
+                      <table class="kv-table">
+                        <template x-for="(v, k) in findingFor('metadata').findings.metadata" :key="k">
+                          <tr><td class="key" x-text="k"></td><td class="val" x-text="v"></td></tr>
+                        </template>
+                      </table>
+                    </div>
+                  </template>
+                  
+                  <!-- OCR Stage -->
+                  <template x-if="t.id === 'ocr'">
+                    <div>
+                      <div class="findings-section-title">Location Clues</div>
+                      <div class="pill-list" x-show="findingFor('ocr').findings.location_clues && findingFor('ocr').findings.location_clues.length">
+                        <template x-for="c in findingFor('ocr').findings.location_clues" :key="c">
+                          <span class="pill-item" x-text="c"></span>
+                        </template>
+                      </div>
+                      <div class="text-muted" x-show="!findingFor('ocr').findings.location_clues || !findingFor('ocr').findings.location_clues.length" style="font-size:13px; padding:6px 0;">No location clues.</div>
+
+                      <div class="findings-section-title">Entities</div>
+                      <table class="kv-table">
+                        <template x-for="(v, k) in findingFor('ocr').findings.entities" :key="k">
+                          <tr><td class="key" x-text="k.replace(/_/g,' ')"></td><td class="val" x-text="v.join(', ') || 'None'"></td></tr>
+                        </template>
+                      </table>
+
+                      <div class="findings-section-title">Text Regions Detected</div>
+                      <table class="findings-table">
+                        <thead>
+                          <tr><th>Detected Text</th><th>Language</th><th>Confidence</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="tr in findingFor('ocr').findings.text_regions">
+                            <tr>
+                              <td style="font-weight:500;" x-text="tr.text"></td>
+                              <td x-text="tr.language"></td>
+                              <td x-text="Math.round(tr.confidence) + '%'"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="!findingFor('ocr').findings.text_regions || !findingFor('ocr').findings.text_regions.length">
+                            <td colspan="3" class="text-muted" style="text-align:center; padding:16px;">No text regions found.</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Objects Stage -->
+                  <template x-if="t.id === 'object'">
+                    <div>
+                      <div class="findings-section-title">Summary</div>
+                      <table class="kv-table">
+                        <tr><td class="key">Total Count</td><td class="val" x-text="findingFor('object').findings.count"></td></tr>
+                      </table>
+                      
+                      <div class="findings-section-title">Inventory</div>
+                      <div class="pill-list" x-show="Object.keys(findingFor('object').findings.inventory || {}).length">
+                        <template x-for="(count, cls) in findingFor('object').findings.inventory" :key="cls">
+                          <span class="pill-item" x-text="cls + ': ' + count"></span>
+                        </template>
+                      </div>
+                      
+                      <div class="findings-section-title">Details</div>
+                      <table class="findings-table">
+                        <thead>
+                          <tr><th>Object Class</th><th>Confidence</th><th>Bounding Box</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="obj in findingFor('object').findings.objects">
+                            <tr>
+                              <td style="text-transform:capitalize; font-weight:500;" x-text="obj.class"></td>
+                              <td x-text="Math.round(obj.confidence) + '%'"></td>
+                              <td style="font-family:monospace;" x-text="'[' + obj.bbox.join(', ') + ']'"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="!findingFor('object').findings.objects || !findingFor('object').findings.objects.length">
+                            <td colspan="3" class="text-muted" style="text-align:center; padding:16px;">No objects detected.</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Geo Stage -->
+                  <template x-if="t.id === 'geoint'">
+                    <div>
+                      <div class="findings-section-title">Scene Classification</div>
+                      <table class="kv-table">
+                        <tr><td class="key">Terrain</td><td class="val" style="text-transform:capitalize;" x-text="findingFor('geoint').findings.scene.terrain"></td></tr>
+                        <tr><td class="key">Blue Ratio</td><td class="val" x-text="(findingFor('geoint').findings.scene.blue_ratio * 100).toFixed(2) + '%'"></td></tr>
+                        <tr><td class="key">Gray Ratio</td><td class="val" x-text="(findingFor('geoint').findings.scene.gray_ratio * 100).toFixed(2) + '%'"></td></tr>
+                        <tr><td class="key">Green Ratio</td><td class="val" x-text="(findingFor('geoint').findings.scene.green_ratio * 100).toFixed(2) + '%'"></td></tr>
+                      </table>
+                      
+                      <div class="findings-section-title">Tags</div>
+                      <div class="pill-list">
+                        <template x-for="tag in findingFor('geoint').findings.scene.tags" :key="tag">
+                          <span class="pill-item" x-text="tag"></span>
+                        </template>
+                      </div>
+
+                      <div class="findings-section-title">Location Candidates</div>
+                      <table class="findings-table">
+                        <thead>
+                          <tr><th>Location</th><th>Confidence</th><th>Basis</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="cand in findingFor('geoint').findings.candidates">
+                            <tr>
+                              <td style="font-weight:500;" x-text="(cand.city === 'unknown' ? '' : cand.city + ', ') + cand.country"></td>
+                              <td x-text="Math.round(cand.confidence) + '%'"></td>
+                              <td x-text="cand.basis"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="!findingFor('geoint').findings.candidates || !findingFor('geoint').findings.candidates.length">
+                            <td colspan="3" class="text-muted" style="text-align:center; padding:16px;">No candidates generated.</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Search Stage -->
+                  <template x-if="t.id === 'reverse_search'">
+                    <div>
+                      <div class="findings-section-title" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                        <span>Web Search Engine Analysis</span>
+                        
+                        <!-- Dropdown Menu -->
+                        <div x-data="{
+                          open: false,
+                          loading: false,
+                          statusMsg: '',
+                          engines: [
+                            { name: 'Google', domain: 'google.com', url: 'https://lens.google.com/uploadbyurl?url=' },
+                            { name: 'Lenso.ai', domain: 'lenso.ai', url: 'https://lenso.ai/en/search?url=' },
+                            { name: 'Bing', domain: 'bing.com', url: 'https://www.bing.com/images/searchbyimage?cbir=sbi&imgurl=' },
+                            { name: 'Yandex', domain: 'yandex.com', url: 'https://yandex.com/images/search?rpt=imageview&url=' },
+                            { name: 'TinEye', domain: 'tineye.com', url: 'https://tineye.com/search?url=' },
+                            { name: 'SauceNAO', domain: 'saucenao.com', url: 'https://saucenao.com/search.php?db=999&url=' },
+                            { name: 'IQDB', domain: 'iqdb.org', url: 'https://iqdb.org/?url=' },
+                            { name: 'Karma Decay', domain: 'karmadecay.com', url: 'http://karmadecay.com/search?kdurl=' },
+                            { name: 'Pinterest', domain: 'pinterest.com', url: 'https://pinterest.com/search/pins/?q=' }
+                          ],
+                          async getPublicUrl() {
+                            this.loading = true;
+                            this.statusMsg = 'Uploading...';
+                            try {
+                              const r = await fetch('/api/v1/cases/' + caseId + '/public_url', { method: 'POST' });
+                              if (!r.ok) throw new Error('Upload failed');
+                              const d = await r.json();
+                              if (d.url) return d.url;
+                              throw new Error(d.error || 'Upload failed');
+                            } finally {
+                              this.loading = false;
+                              this.statusMsg = '';
+                            }
+                          },
+                          async searchSingle(eng) {
+                            try {
+                              const imgUrl = await this.getPublicUrl();
+                              window.open(eng.url + encodeURIComponent(imgUrl), '_blank');
+                            } catch(e) {
+                              alert('Error uploading case image: ' + e.message);
+                            }
+                            this.open = false;
+                          },
+                          async searchAll() {
+                            try {
+                              const imgUrl = await this.getPublicUrl();
+                              this.engines.forEach(eng => {
+                                window.open(eng.url + encodeURIComponent(imgUrl), '_blank');
+                              });
+                            } catch(e) {
+                              alert('Error uploading case image: ' + e.message);
+                            }
+                            this.open = false;
+                          }
+                        }" @click.outside="open = false" style="position:relative; z-index:100; margin: 4px 0;">
+                          <button @click="open = !open" :disabled="loading" class="btn btn-secondary btn-sm" style="font-weight:600; display:flex; align-items:center; gap:6px;">
+                            <span x-show="loading" x-text="statusMsg"></span>
+                            <span x-show="!loading">Select URL <span style="font-size:10px; opacity:0.8;">▼</span></span>
+                          </button>
+                          
+                          <div x-show="open" class="panel" style="position:absolute; right:0; top:32px; width:220px; background:#202020; box-shadow:0 8px 24px rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.08); border-radius:6px; overflow:hidden; padding:4px 0; margin-bottom:0; z-index:110;">
+                            
+                            <!-- All Search Engines Option -->
+                            <button @click="searchAll()" style="width:100%; text-align:left; background:none; border:none; color:#e0e0e0; padding:8px 12px; font-size:13px; font-family:inherit; cursor:pointer; display:flex; align-items:center; gap:10px; transition:background 80ms;"
+                                    onmouseover="this.style.background='rgba(255,255,255,0.06)'"
+                                    onmouseout="this.style.background='none'">
+                              <span style="font-size:14px; width:16px; height:16px; display:inline-flex; align-items:center; justify-content:center;">🌐</span>
+                              <span style="font-weight:600;">All search engines</span>
+                            </button>
+                            
+                            <div style="border-top:1px solid rgba(255,255,255,0.06); margin:4px 0;"></div>
+                            
+                            <!-- Specific Engines Options -->
+                            <template x-for="eng in engines" :key="eng.name">
+                              <button @click="searchSingle(eng)" style="width:100%; text-align:left; background:none; border:none; color:#e0e0e0; padding:8px 12px; font-size:13px; font-family:inherit; cursor:pointer; display:flex; align-items:center; gap:10px; transition:background 80ms;"
+                                      onmouseover="this.style.background='rgba(255,255,255,0.06)'"
+                                      onmouseout="this.style.background='none'">
+                                <img :src="'https://www.google.com/s2/favicons?sz=32&domain=' + eng.domain" alt="icon" style="width:16px; height:16px; border-radius:2px;" />
+                                <span x-text="eng.name"></span>
+                              </button>
+                            </template>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style="background:rgba(255,167,38,0.05); border:1px solid rgba(255,167,38,0.1); border-radius:4px; padding:8px 12px; font-size:12px; color:#ffa726; display:flex; align-items:flex-start; gap:8px; margin-bottom:16px;">
+                        <span style="font-weight:bold;">Note:</span>
+                        <span>Since this server runs locally, external image search engines cannot directly fetch your local file URL. For local images, download and upload manually or use a public URL during ingestion.</span>
+                      </div>
+
+                      <div class="findings-section-title">Oldest Appearance</div>
+                      <div class="overview-card" style="margin-top:6px; background:#1e1e1e;" x-show="findingFor('reverse_search').findings.oldest_appearance">
+                        <div class="overview-card-header" x-text="findingFor('reverse_search').findings.oldest_appearance?.source"></div>
+                        <div class="overview-card-value"><a :href="findingFor('reverse_search').findings.oldest_appearance?.url" target="_blank" x-text="findingFor('reverse_search').findings.oldest_appearance?.title"></a></div>
+                        <div class="overview-card-sub" x-text="'Published: ' + (findingFor('reverse_search').findings.oldest_appearance?.published_date ? new Date(findingFor('reverse_search').findings.oldest_appearance.published_date).toLocaleDateString() : 'Unknown')"></div>
+                      </div>
+                      <div class="text-muted" x-show="!findingFor('reverse_search').findings.oldest_appearance" style="font-size:13px; padding:6px 0;">No appearance dates indexed.</div>
+
+                      <div class="findings-section-title">Sources Mentioning Image</div>
+                      <div class="pill-list" x-show="findingFor('reverse_search').findings.websites && findingFor('reverse_search').findings.websites.length">
+                        <template x-for="w in findingFor('reverse_search').findings.websites" :key="w">
+                          <span class="pill-item" x-text="w"></span>
+                        </template>
+                      </div>
+
+                      <div class="findings-section-title">Web Results</div>
+                      <table class="findings-table">
+                        <thead>
+                          <tr><th>Result Title</th><th>Source</th><th>Similarity</th><th>Published</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="m in findingFor('reverse_search').findings.matches">
+                            <tr>
+                              <td style="font-weight:500;"><a :href="m.url" target="_blank" x-text="m.title"></a></td>
+                              <td x-text="m.source"></td>
+                              <td x-text="(m.similarity * 100).toFixed(1) + '%'"></td>
+                              <td class="text-muted" x-text="m.published_date ? new Date(m.published_date).toLocaleDateString() : 'N/A'"></td>
+                            </tr>
+                          </template>
+                          <tr x-show="!findingFor('reverse_search').findings.matches || !findingFor('reverse_search').findings.matches.length">
+                            <td colspan="4" class="text-muted" style="text-align:center; padding:16px;">No image matches found on the web.</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Tampering Stage -->
+                  <template x-if="t.id === 'tampering'">
+                    <div>
+                      <div class="findings-section-title">Summary</div>
+                      <table class="kv-table">
+                        <tr><td class="key">Tampering Confidence</td><td class="val"><span class="badge" :class="findingFor('tampering').findings.tampering_confidence > 50 ? 'badge-danger' : 'badge-success'" x-text="Math.round(findingFor('tampering').findings.tampering_confidence) + '%'"></span></td></tr>
+                        <tr><td class="key">Heatmap Produced</td><td class="val" x-text="findingFor('tampering').findings.heatmap_produced ? 'Yes' : 'No'"></td></tr>
+                      </table>
+
+                      <div class="findings-section-title">Analyses Sub-modules</div>
+                      <table class="findings-table">
+                        <thead>
+                          <tr><th>Method</th><th>Ran</th><th>Result status</th><th>Score / Info</th></tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="(info, method) in findingFor('tampering').findings.analyses" :key="method">
+                            <tr>
+                              <td style="text-transform:uppercase; font-weight:500;" x-text="method"></td>
+                              <td x-text="info.ran ? 'Yes' : 'No'"></td>
+                              <td><span class="badge" :class="info.suspicious ? 'badge-danger' : 'badge-success'" x-text="info.suspicious ? 'Suspicious' : 'Normal'"></span></td>
+                              <td x-text="info.score !== undefined ? info.score.toFixed(3) : (info.max ? 'Max Error Level: ' + info.max : '-')"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- AI Detection Stage -->
+                  <template x-if="t.id === 'ai_image'">
+                    <div>
+                      <div class="findings-section-title">Classification</div>
+                      <table class="kv-table">
+                        <tr><td class="key">Result</td><td class="val"><span class="badge" :class="findingFor('ai_image').findings.is_ai_generated ? 'badge-warning' : 'badge-success'" x-text="findingFor('ai_image').findings.is_ai_generated ? 'AI Generated' : 'Camera Capture'"></span></td></tr>
+                        <tr><td class="key">AI Probability</td><td class="val" x-text="findingFor('ai_image').findings.ai_probability.toFixed(2) + '%'"></td></tr>
+                        <tr><td class="key">Method Used</td><td class="val" x-text="findingFor('ai_image').findings.signals.method"></td></tr>
+                      </table>
+
+                      <div class="findings-section-title">Signals details</div>
+                      <table class="kv-table">
+                        <template x-for="(v, k) in findingFor('ai_image').findings.signals" :key="k">
+                          <tr><td class="key" x-text="k.replace(/_/g,' ')"></td><td class="val" x-text="v"></td></tr>
+                        </template>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Deepfake Stage -->
+                  <template x-if="t.id === 'deepfake'">
+                    <div>
+                      <table class="kv-table">
+                        <tr><td class="key">Applicable</td><td class="val" x-text="findingFor('deepfake').findings.applicable ? 'Yes' : 'No'"></td></tr>
+                        <tr><td class="key">Reason / Info</td><td class="val" x-text="findingFor('deepfake').findings.reason"></td></tr>
+                        <template x-if="findingFor('deepfake').findings.applicable">
+                          <tr><td class="key">Is Deepfake</td><td class="val"><span class="badge" :class="findingFor('deepfake').findings.is_deepfake ? 'badge-danger' : 'badge-success'" x-text="findingFor('deepfake').findings.is_deepfake ? 'Yes' : 'No'"></span></td></tr>
+                        </template>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Steganography Stage -->
+                  <template x-if="t.id === 'stego'">
+                    <div>
+                      <table class="kv-table">
+                        <tr><td class="key">Entropy</td><td class="val" x-text="findingFor('stego').findings.entropy.toFixed(6)"></td></tr>
+                        <tr><td class="key">Risk Score</td><td class="val"><span class="badge" :class="findingFor('stego').findings.risk_score > 50 ? 'badge-danger' : 'badge-success'" x-text="findingFor('stego').findings.risk_score"></span></td></tr>
+                        <tr><td class="key">Hidden Payloads</td><td class="val" x-text="findingFor('stego').findings.hidden_data || 'None Detected'"></td></tr>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Threat Stage -->
+                  <template x-if="t.id === 'threat'">
+                    <div>
+                      <table class="kv-table">
+                        <tr><td class="key">Is Threat</td><td class="val"><span class="badge" :class="findingFor('threat').findings.is_threat ? 'badge-danger' : 'badge-success'" x-text="findingFor('threat').findings.is_threat ? 'Yes' : 'No'"></span></td></tr>
+                        <tr><td class="key">Risk Score</td><td class="val" x-text="findingFor('threat').findings.risk_score"></td></tr>
+                      </table>
+                      
+                      <div class="findings-section-title">Indicators</div>
+                      <div class="pill-list" x-show="findingFor('threat').findings.indicators && findingFor('threat').findings.indicators.length">
+                        <template x-for="ind in findingFor('threat').findings.indicators" :key="ind">
+                          <span class="pill-item" style="background:rgba(239,83,80,0.1); border-color:rgba(239,83,80,0.2); color:#ef5350;" x-text="ind"></span>
+                        </template>
+                      </div>
+                      <div class="text-muted" x-show="!findingFor('threat').findings.indicators || !findingFor('threat').findings.indicators.length" style="font-size:13px; padding:6px 0;">No threat indicators.</div>
+                    </div>
+                  </template>
+
+                  <!-- Weather Stage -->
+                  <template x-if="t.id === 'weather'">
+                    <div>
+                      <table class="kv-table">
+                        <tr><td class="key">Estimated Weather</td><td class="val" style="text-transform:capitalize;" x-text="findingFor('weather').findings.weather"></td></tr>
+                        <tr><td class="key">Time of Day</td><td class="val" style="text-transform:capitalize;" x-text="findingFor('weather').findings.time_of_day"></td></tr>
+                        <tr><td class="key">Shadow Direction</td><td class="val" x-text="findingFor('weather').findings.shadow_direction || 'None'"></td></tr>
+                        <tr><td class="key">Shadow Strength</td><td class="val" x-text="findingFor('weather').findings.shadow_strength ? findingFor('weather').findings.shadow_strength.toFixed(3) : 'None'"></td></tr>
+                        <tr><td class="key">Brightness Level</td><td class="val" x-text="findingFor('weather').findings.brightness ? findingFor('weather').findings.brightness.toFixed(3) : 'None'"></td></tr>
+                        <tr><td class="key">Estimation Confidence</td><td class="val" x-text="Math.round(findingFor('weather').findings.capture_time_confidence) + '%'"></td></tr>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Face Stage -->
+                  <template x-if="t.id === 'face'">
+                    <div>
+                      <table class="kv-table">
+                        <tr><td class="key">Faces Detected</td><td class="val" x-text="findingFor('face').findings.face_count"></td></tr>
+                        <tr><td class="key">Face Clusters</td><td class="val" x-text="findingFor('face').findings.clusters ? findingFor('face').findings.clusters.length : 0"></td></tr>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Landmark Stage -->
+                  <template x-if="t.id === 'landmark'">
+                    <div>
+                      <table class="kv-table">
+                        <tr><td class="key">Landmark Identified</td><td class="val" x-text="findingFor('landmark').findings.landmark || 'None Identified'"></td></tr>
+                        <tr><td class="key">Likely Structure Type</td><td class="val" style="text-transform:capitalize;" x-text="findingFor('landmark').findings.structure?.likely_structure || 'Unknown'"></td></tr>
+                        <tr><td class="key">Vertical Lines Count</td><td class="val" x-text="findingFor('landmark').findings.structure?.vertical_lines || 0"></td></tr>
+                        <tr><td class="key">Line Segments Detected</td><td class="val" x-text="findingFor('landmark').findings.structure?.line_segments || 0"></td></tr>
+                      </table>
+                    </div>
+                  </template>
+                  
+                  <!-- Fallback Stage Viewer -->
+                  <div x-show="!['metadata','ocr','object','geoint','reverse_search','tampering','ai_image','deepfake','stego','threat','weather','face','landmark'].includes(t.id)">
+                    <table class="kv-table">
+                      <template x-for="(v, k) in (findingFor(t.id)?.findings || {})" :key="k">
+                        <tr>
+                          <td class="key" x-text="k"></td>
+                          <td class="val" x-text="typeof v === 'object' ? JSON.stringify(v) : v"></td>
+                        </tr>
+                      </template>
+                    </table>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+          </template>
+          <div x-show="!findingFor(t.id)" class="finding-empty">
+            Stage has not produced results yet.
+          </div>
+        </div>
+      </template>
+    </div>
+
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function investigation(caseId) {
+  return {
+    caseId, tab: 'overview', caseStatus: 'queued',
+    stages: {}, findings: {}, hex: '', reportMsg: '', poll: null,
+    rawTabs: {},
+    isRaw(id) { return !!this.rawTabs[id]; },
+    toggleRaw(id) { this.rawTabs[id] = !this.rawTabs[id]; },
+    tabs: [
+      {id:'overview',label:'Overview'},{id:'metadata',label:'Metadata'},{id:'ocr',label:'OCR'},
+      {id:'object',label:'Objects'},{id:'geoint',label:'Geo'},{id:'reverse_search',label:'Search'},
+      {id:'tampering',label:'Tampering'},{id:'deepfake',label:'Deepfake'},{id:'ai_image',label:'AI'},
+      {id:'stego',label:'Stego'},{id:'threat',label:'Threat'},{id:'weather',label:'Weather'},
+      {id:'face',label:'Faces'},{id:'landmark',label:'Landmark'},
+      {id:'hex',label:'Hex'},{id:'graph',label:'Graph'},{id:'reports',label:'Reports'}
+    ],
+    init() {
+      window.investigation_data = this;
+      this.refresh();
+      this.poll = setInterval(() => this.refresh(), 2500);
+      this.loadGraph();
+    },
+    async refresh() {
+      try {
+        const r = await fetch('/api/v1/cases/' + this.caseId);
+        if (!r.ok) return;
+        const d = await r.json();
+        this.caseStatus = d.status;
+        // Update the badge in the header
+        const badge = document.getElementById('case-badge');
+        if (badge) {
+          badge.textContent = d.status;
+          badge.className = 'badge ' + (d.status==='complete'?'badge-success':d.status==='running'?'badge-warning':'badge-neutral');
+        }
+        const map = {}; const fmap = {};
+        (d.stages||[]).forEach(s => { map[s.stage] = s.status; fmap[s.stage] = s; });
+        this.stages = map; this.findings = fmap;
+        if (d.status === 'complete' && this.poll) { clearInterval(this.poll); this.poll = null; }
+      } catch(e) {}
+    },
+    findingFor(id) { return this.findings[id] || null; },
+    pretty(o) { try { return JSON.stringify(o, null, 2); } catch(e){ return String(o); } },
+    async loadHex() {
+      try {
+        const r = await fetch('/api/v1/cases/' + this.caseId + '/hex');
+        const d = await r.json(); this.hex = d.hex || '(empty)';
+      } catch(e) { this.hex = 'Error loading hex view'; }
+    },
+    async runCtf() {
+      this.tab = 'stego';
+      try {
+        await fetch('/api/v1/cases/' + this.caseId + '/ctf', {method:'POST'});
+        this.refresh();
+        alert('CTF investigation complete. Check the Stego and Hex tabs.');
+      } catch(e) { alert('CTF failed: ' + e.message); }
+    },
+    async downloadReport(fmt) {
+      try {
+        const r = await fetch('/api/v1/cases/' + this.caseId + '/report', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({format: fmt})
+        });
+        if (!r.ok) { const d = await r.json(); this.reportMsg = d.error || 'No report available'; return; }
+        const blob = await r.blob();
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = 'report-' + this.caseId + '.' + fmt; a.click();
+      } catch(e) { this.reportMsg = 'Error: ' + e.message; }
+    },
+    async loadGraph() {
+      try {
+        const res = await fetch('/api/v1/cases/' + this.caseId + '/graph');
+        const data = await res.json();
+        const els = [
+          ...(data.nodes||[]).map(n=>({data:{id:n.id,label:n.label,type:n.type}})),
+          ...(data.edges||[]).map(e=>({data:{source:e.src,target:e.dst,label:e.relation}}))
+        ];
+        const c = document.getElementById('kg'); if (!c) return;
+        cytoscape({ container:c, elements:els, style:[
+          {selector:'node',style:{'label':'data(label)','background-color':'#529cca','color':'#e0e0e0','font-size':7,'width':14,'height':14}},
+          {selector:'edge',style:{'label':'data(label)','line-color':'#404040','width':1,'font-size':5,'color':'#6b6b6b','target-arrow-shape':'triangle','target-arrow-color':'#404040','curve-style':'bezier'}}
+        ], layout:{name:'cose', animate:false}});
+      } catch(e) { const el=document.getElementById('kg-error'); if(el) el.classList.remove('hidden'); }
+    }
+  };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,26 @@
+# AURALIS VISION - core platform dependencies
+# Web framework
+Flask>=3.0,<4.0
+
+# ORM and migrations
+SQLAlchemy>=2.0,<3.0
+Flask-SQLAlchemy>=3.1,<4.0
+alembic>=1.13,<2.0
+
+# Async task processing
+celery>=5.3,<6.0
+redis>=5.0,<6.0
+
+# Authentication (JWT session tokens)
+PyJWT>=2.8,<3.0
+
+# Object storage (S3-compatible / MinIO)
+minio>=7.2,<8.0
+boto3>=1.34,<2.0
+
+# Search index
+opensearch-py>=2.4,<3.0
+
+# Testing
+pytest>=8.0,<9.0
+hypothesis>=6.100,<7.0

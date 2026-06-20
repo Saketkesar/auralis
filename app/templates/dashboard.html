@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Auralis Vision{% endblock %}
+
+{% block header %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p>Image intelligence and investigation platform</p>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="page-body">
+
+  <!-- Stats -->
+  <div class="stats-grid">
+    {% for card in cards %}
+    <div class="stat-card">
+      <div class="stat-card-value">{{ card.value }}</div>
+      <div class="stat-card-label">{{ card.label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- New Investigation -->
+  <div class="panel mb-md" x-data="uploader()">
+    <div class="panel-header">New Investigation</div>
+    <div class="panel-body">
+      <div class="upload-grid">
+
+        <div class="upload-dropzone"
+             :class="drag ? 'drag-active' : ''"
+             @dragover.prevent="drag=true"
+             @dragleave.prevent="drag=false"
+             @drop.prevent="onDrop($event)"
+             @click="$refs.file.click()">
+          <input type="file" x-ref="file" style="display:none" accept="image/*" @change="onPick($event)" />
+          <div class="upload-icon">&#8593;</div>
+          <div class="upload-text">
+            <span x-show="!filename">Drop an image here or click to browse</span>
+            <span x-show="filename" class="upload-text-selected" x-text="filename"></span>
+          </div>
+          <div class="upload-hint">Supports JPG, PNG, WEBP, TIFF, BMP, HEIC</div>
+        </div>
+
+        <div class="upload-url-section">
+          <div class="upload-url-label">Or paste an image URL</div>
+          <div class="upload-url-row">
+            <input type="url" x-model="url" placeholder="https://example.com/photo.jpg" class="input-field" />
+            <button @click="submitUrl()" :disabled="busy" class="btn btn-primary">Investigate</button>
+          </div>
+          <div x-show="busy" class="upload-status loading">
+            <span class="upload-pulse">Uploading and starting pipeline...</span>
+          </div>
+          <div x-show="error" class="upload-status error" x-text="error"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent Investigations -->
+  <div class="panel" x-data="searcher()">
+    <div class="panel-header" style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+      <span>Recent Investigations</span>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <input type="search" x-model="query" @input.debounce.250ms="doSearch()" placeholder="Search cases or findings..." class="input-field" style="width:240px; padding:4px 8px; font-size:13px; margin:0;" />
+        <span x-show="loading" class="text-muted" style="font-size:11px;">Searching...</span>
+      </div>
+    </div>
+    
+    <table class="data-table">
+      <thead>
+        <tr><th>Case</th><th>Status</th><th>Format</th><th>Created</th></tr>
+      </thead>
+      <tbody>
+        <!-- Active Search Results -->
+        <template x-if="results !== null">
+          <template x-for="c in results" :key="c.id">
+            <tr>
+              <td><a class="data-table-link" :href="'/ui/cases/' + c.id" x-text="c.id.substring(0,8)"></a></td>
+              <td>
+                <span class="badge"
+                      :class="c.status === 'complete' || c.status === 'completed' ? 'badge-success' : c.status === 'running' ? 'badge-warning' : 'badge-neutral'"
+                      x-text="c.status"></span>
+              </td>
+              <td x-text="c.format"></td>
+              <td class="text-muted" x-text="c.created"></td>
+            </tr>
+          </template>
+        </template>
+        
+        <!-- Standard Static List (Jinja fallback handled by Alpine on load) -->
+        <template x-if="results === null">
+          <template x-for="c in initialCases" :key="c.id">
+            <tr>
+              <td><a class="data-table-link" :href="'/ui/cases/' + c.id" x-text="c.id.substring(0,8)"></a></td>
+              <td>
+                <span class="badge"
+                      :class="c.status === 'complete' || c.status === 'completed' ? 'badge-success' : c.status === 'running' ? 'badge-warning' : 'badge-neutral'"
+                      x-text="c.status"></span>
+              </td>
+              <td x-text="c.format"></td>
+              <td class="text-muted" x-text="c.created"></td>
+            </tr>
+          </template>
+        </template>
+        
+        <!-- Empty States -->
+        <tr x-show="results === null && initialCases.length === 0">
+          <td colspan="4" class="data-table-empty">No investigations yet. Upload an image to get started.</td>
+        </tr>
+        <tr x-show="results !== null && results.length === 0">
+          <td colspan="4" class="data-table-empty">No matching cases found.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function uploader() {
+  return {
+    drag: false, busy: false, error: '', url: '', filename: '',
+    onPick(e) { if (e.target.files.length) this.upload(e.target.files[0]); },
+    onDrop(e) { this.drag = false; if (e.dataTransfer.files.length) this.upload(e.dataTransfer.files[0]); },
+    async upload(file) {
+      this.busy = true; this.error = ''; this.filename = file.name;
+      const fd = new FormData(); fd.append('file', file);
+      try {
+        const r = await fetch('/api/v1/cases', { method: 'POST', body: fd });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Upload failed');
+        window.location = '/ui/cases/' + d.cases[0].case_id;
+      } catch (err) { this.error = err.message; this.busy = false; }
+    },
+    async submitUrl() {
+      if (!this.url) return;
+      this.busy = true; this.error = '';
+      try {
+        const r = await fetch('/api/v1/cases', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ url: this.url })
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'Upload failed');
+        window.location = '/ui/cases/' + d.cases[0].case_id;
+      } catch (err) { this.error = err.message; this.busy = false; }
+    }
+  };
+}
+
+function searcher() {
+  return {
+    query: '',
+    results: null,
+    loading: false,
+    initialCases: [
+      {% for c in recent %}
+      {
+        id: '{{ c.id }}',
+        status: '{{ c.status }}',
+        format: '{{ c.format }}',
+        created: '{{ c.created }}'
+      },
+      {% endfor %}
+    ],
+    async doSearch() {
+      if (!this.query.trim()) {
+        this.results = null;
+        return;
+      }
+      this.loading = true;
+      try {
+        const r = await fetch('/api/v1/search/find?q=' + encodeURIComponent(this.query));
+        const d = await r.json();
+        this.results = d.results || [];
+      } catch(e) {
+        this.results = [];
+      } finally {
+        this.loading = false;
+      }
+    }
+  };
+}
+</script>
+{% endblock %}
